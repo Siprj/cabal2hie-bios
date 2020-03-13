@@ -1,0 +1,4 @@
+.stack-work/
+simple-hpack.cabal
+*~
+*.cabal
