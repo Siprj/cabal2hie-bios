@@ -1,7 +1,9 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
+
 module Lib
     ( parseCabalFile
+    , parseCabalFileSimple
     , getExistingFiles
     , componentToHieFile
     , BiosCabalComponent(..)
@@ -145,3 +147,61 @@ packageIdToStr id = pack . unPackageName $ pkgName id
 libraryNameToStr :: Text -> LibraryName -> Text
 libraryNameToStr def LMainLibName = def
 libraryNameToStr def (LSubLibName name) = pack $ unUnqualComponentName name
+
+parseCabalFileSimple :: FilePath -> IO [(Text, [FilePath], [FilePath])]
+parseCabalFileSimple cabalFilePath = do
+    (packageDescription, _) <- readGenericPackageDescription verbose cabalFilePath
+        >>= either
+            (const $ fail "Internal error (finalizePD is missing dependences!!!")
+            pure
+            . finalizePD'
+    pure $ toComponents packageDescription
+  where
+    flags :: FlagAssignment
+    flags = mkFlagAssignment []
+
+    componentReques :: ComponentRequestedSpec
+    componentReques = ComponentRequestedSpec True True
+
+    compilerInfo :: CompilerInfo
+    compilerInfo = unknownCompilerInfo (CompilerId GHC $ mkVersion [8,6,5]) NoAbiTag
+
+    finalizePD' = finalizePD flags componentReques (const True) buildPlatform compilerInfo []
+
+    toComponents :: PackageDescription -> [(Text, [FilePath], [FilePath])]
+    toComponents PackageDescription{..} = mconcat
+        [ maybe ([]) (\v -> [getLibraryMetaData v]) library
+        , fmap getLibraryMetaData subLibraries
+        , fmap getExecutableMetaData executables
+        , fmap getTestSuiteMetaData testSuites
+        , fmap getBenchmarkMetaData benchmarks
+        ]
+      where
+
+        getLibraryMetaData :: Library -> (Text, [FilePath], [FilePath])
+        getLibraryMetaData library@Library{..} =
+            ( libraryNameToStr (packageIdToStr package) libName
+            , flip addExtension "hs" . toFilePath <$> explicitLibModules library
+            , hsSourceDirs libBuildInfo)
+
+        getExecutableMetaData :: Executable -> (Text, [FilePath], [FilePath])
+        getExecutableMetaData executable@Executable{..} =
+            ( pack $ unUnqualComponentName exeName
+            , modulePath : (flip addExtension "hs" . toFilePath <$> exeModules executable)
+            , hsSourceDirs buildInfo)
+
+        getTestSuiteMetaData :: TestSuite -> (Text, [FilePath], [FilePath])
+        getTestSuiteMetaData testSuite@TestSuite{..} =
+            ( pack $ unUnqualComponentName testName
+            , mainFile <> (flip addExtension "hs" . toFilePath <$> testModules testSuite)
+            , hsSourceDirs testBuildInfo)
+          where
+            mainFile = case testInterface of
+                (TestSuiteExeV10 _ f) -> [f]
+                _ -> []
+
+        getBenchmarkMetaData :: Benchmark -> (Text, [FilePath], [FilePath])
+        getBenchmarkMetaData benchmark@Benchmark{..} =
+            ( pack $ unUnqualComponentName benchmarkName
+            , flip addExtension "hs" . toFilePath <$> benchmarkModules benchmark
+            , hsSourceDirs benchmarkBuildInfo)
